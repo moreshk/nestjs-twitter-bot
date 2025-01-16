@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { TwitterApi } from 'twitter-api-v2';
 import { ConfigService } from '@nestjs/config';
 import { OpenAI } from 'openai';
@@ -12,6 +12,8 @@ export class TwitterService {
   private respondedTweets = new Set<string>();
   private repliesToday = 0;
   private lastReset = new Date();
+  private lastProcessedTweetId: string | null = null;
+  private isFirstRun = true;
 
   constructor(private configService: ConfigService) {
     this.twitterClient = new TwitterApi({
@@ -39,22 +41,32 @@ export class TwitterService {
     }
   }
 
-  private async checkMentions(userId: string): Promise<any> {
+  private async checkMentions(userId: string, options: any): Promise<any> {
     try {
-      const mentions = await this.twitterClient.v2.userMentionTimeline(userId, {
-        max_results: 5,
-        "tweet.fields": ["created_at", "text", "author_id"],
-        expansions: ["author_id"],
-        "user.fields": ["username"],
-      });
+      if (this.isFirstRun) {
+        options.max_results = 5;
+        this.isFirstRun = false;
+      }
+
+      if (this.lastProcessedTweetId) {
+        options.since_id = this.lastProcessedTweetId;
+      }
+
+      const mentions = await this.twitterClient.v2.userMentionTimeline(
+        userId,
+        options,
+      );
 
       if (mentions.data.data && mentions.data.data.length > 0) {
-        this.logger.log(`Found ${mentions.data.data.length} mentions`);
-        mentions.data.data.forEach(tweet => {
-          this.logger.log(`Tweet ${tweet.id} from ${tweet.created_at}: ${tweet.text}`);
-        });
+        this.lastProcessedTweetId = mentions.data.data[0].id;
+        this.logger.log(
+          `Found ${mentions.data.data.length} new mentions since last check`,
+        );
+        this.logger.log(
+          `Updated last processed tweet ID to: ${this.lastProcessedTweetId}`,
+        );
       } else {
-        this.logger.log('No mentions found in the response');
+        this.logger.log('No new mentions found');
       }
 
       return mentions.data;
@@ -68,38 +80,16 @@ export class TwitterService {
     }
   }
 
-  private async replyToTweet(tweetId: string, replyText: string): Promise<boolean> {
+  private async replyToTweet(
+    tweetId: string,
+    replyText: string,
+  ): Promise<boolean> {
     try {
       await this.twitterClient.v2.reply(replyText, tweetId);
       return true;
     } catch (error) {
       this.logger.error(`Failed to reply to tweet ${tweetId}:`, error);
       return false;
-    }
-  }
-
-  private async generateAiResponse(tweetText: string): Promise<string> {
-    try {
-      const response = await this.openAiClient.chat.completions.create({
-        model: "gpt-4",
-        messages: [
-          {
-            role: "system",
-            content: "You are a helpful but slightly sassy assistant. Keep responses under 240 characters and suitable for Twitter."
-          },
-          {
-            role: "user",
-            content: `Please respond to this tweet: ${tweetText}`
-          }
-        ],
-        max_tokens: 100,
-        temperature: 0.7
-      });
-
-      return response.choices[0].message.content;
-    } catch (error) {
-      this.logger.error('Error generating AI response:', error);
-      return "Sorry, I'm having trouble thinking of a response right now! 🤔";
     }
   }
 
@@ -115,29 +105,28 @@ export class TwitterService {
   private async analyzeTokenIntent(tweetText: string): Promise<boolean> {
     try {
       const response = await this.openAiClient.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: 'gpt-4o-mini',
         messages: [
           {
-            role: "system",
-            content: "You are a token request analyzer. Determine if the tweet is requesting token creation. Respond with either 'YES' or 'NO'."
+            role: 'system',
+            content:
+              "You are a token request analyzer. Determine if the tweet is requesting token creation. Respond with either 'YES' or 'NO'.",
           },
           {
-            role: "user",
-            content: `Is this tweet requesting token creation? Tweet: ${tweetText}`
-          }
+            role: 'user',
+            content: `Is this tweet requesting token creation? Tweet: ${tweetText}`,
+          },
         ],
         max_tokens: 10,
-        temperature: 0.1
+        temperature: 0.1,
       });
 
       const decision = response.choices[0].message.content.trim().toUpperCase();
-      
       // Log the analysis
       this.logger.log('\nTweet Analysis:');
       this.logger.log(`Tweet: ${tweetText}`);
       this.logger.log(`Decision: ${decision}`);
-      
-      return decision === "YES";
+      return decision === 'YES';
     } catch (error) {
       this.logger.error('Error analyzing tweet intent:', error);
       return false;
@@ -151,10 +140,10 @@ export class TwitterService {
   @Cron('*/15 * * * *')
   async checkMentionsJob() {
     try {
-      this.logger.log('\nStarting mention check job...');
+      this.logger.log('\n=== Starting mention check job ===');
       const username = this.configService.get('TWITTER_USER_NAME');
       this.logger.log(`Checking mentions for user: ${username}`);
-      
+
       const userId = await this.getUserId(username);
       if (!userId) {
         this.logger.error('Failed to get user ID');
@@ -163,7 +152,7 @@ export class TwitterService {
 
       this.logger.log(`Found user ID: ${userId}`);
       this.logger.log(`Current replies today: ${this.repliesToday}/17`);
-      
+
       this.checkAndResetDaily();
 
       if (this.repliesToday >= 17) {
@@ -171,42 +160,84 @@ export class TwitterService {
         return;
       }
 
-      const mentions = await this.checkMentions(userId);
-      
+      const mentions = await this.checkMentions(userId, {
+        'tweet.fields': ['created_at', 'text', 'author_id'],
+        expansions: ['author_id'],
+        'user.fields': ['username'],
+      });
       if (mentions?.data) {
         for (const tweet of [...mentions.data].reverse()) {
+          this.logger.log('\n--- Processing Tweet ---');
+          this.logger.log(`Tweet ID: ${tweet.id}`);
+          this.logger.log(`Author ID: ${tweet.author_id}`);
+          this.logger.log(`Content: ${tweet.text}`);
+
+          // Skip if tweet is from ourselves
+          if (tweet.author_id === userId) {
+            this.logger.log('⚠️ Tweet is from ourselves, skipping...');
+            continue;
+          }
+
+          // Check if we've already responded to this tweet
           if (this.respondedTweets.has(tweet.id)) {
-            this.logger.log(`Already responded to tweet ${tweet.id}, skipping...`);
+            this.logger.log('⚠️ Already responded to this tweet, skipping...');
+            continue;
+          }
+
+          // Check if this tweet is a reply to one we've already handled
+          const isReplyToHandledTweet = mentions.data.some(
+            (t) => tweet.text.includes(t.id) && this.respondedTweets.has(t.id),
+          );
+          if (isReplyToHandledTweet) {
+            this.logger.log(
+              '⚠️ Tweet is a reply to an already handled tweet, skipping...',
+            );
+            this.respondedTweets.add(tweet.id);
             continue;
           }
 
           if (this.repliesToday >= 17) {
-            this.logger.log('Hit reply limit during processing. Waiting for next day...');
+            this.logger.log(
+              '⚠️ Hit reply limit during processing. Waiting for next day...',
+            );
             break;
           }
 
-          // Check if tweet is requesting token creation
+          // Analyze tweet intent
+          this.logger.log('🔍 Analyzing tweet intent...');
           const isTokenRequest = await this.analyzeTokenIntent(tweet.text);
-          
+          this.logger.log(
+            `Analysis result: ${isTokenRequest ? 'Token request detected' : 'Not a token request'}`,
+          );
+
           if (isTokenRequest) {
             const replyText = this.generateTokenResponse();
+            this.logger.log(`💬 Attempting to reply with: "${replyText}"`);
+
             if (await this.replyToTweet(tweet.id, replyText)) {
               this.repliesToday++;
               this.respondedTweets.add(tweet.id);
-              this.logger.log(`Replied to token request tweet ${tweet.id} (Replies today: ${this.repliesToday}/17)`);
+              this.logger.log(
+                `✅ Successfully replied to token request tweet ${tweet.id}`,
+              );
+              this.logger.log(`Current reply count: ${this.repliesToday}/17`);
             } else {
-              this.logger.error(`Failed to reply to tweet ${tweet.id}`);
+              this.logger.error(`❌ Failed to reply to tweet ${tweet.id}`);
             }
           } else {
-            this.logger.log(`Tweet ${tweet.id} is not a token request, skipping...`);
-            this.respondedTweets.add(tweet.id);  // Mark as processed
+            this.logger.log(
+              '⏭️ Not a token request, marking as processed and skipping...',
+            );
+            this.respondedTweets.add(tweet.id);
           }
         }
       }
 
-      this.logger.log('\nWaiting 15 minutes before next check...');
+      this.logger.log(
+        '\n=== Job completed, waiting 15 minutes before next check... ===',
+      );
     } catch (error) {
-      this.logger.error('\nAn error occurred:', error);
+      this.logger.error('\n❌ An error occurred:', error);
     }
   }
 }
