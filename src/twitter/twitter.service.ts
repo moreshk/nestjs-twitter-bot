@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { TwitterApi } from 'twitter-api-v2';
@@ -85,7 +86,7 @@ export class TwitterService {
     replyText: string,
   ): Promise<boolean> {
     try {
-      await this.twitterClient.v2.reply(replyText, tweetId);
+      // await this.twitterClient.v2.reply(replyText, tweetId);
       return true;
     } catch (error) {
       this.logger.error(`Failed to reply to tweet ${tweetId}:`, error);
