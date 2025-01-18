@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { TwitterApi } from 'twitter-api-v2';
 import { ConfigService } from '@nestjs/config';
@@ -10,9 +10,12 @@ import { encodeUTF8, decodeUTF8 } from "tweetnacl-util";
 import bs58 from "bs58";
 import axios from "axios";
 import FormData = require('form-data');
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import * as fsSync from 'fs';
 
 @Injectable()
-export class TwitterService {
+export class TwitterService implements OnModuleInit {
   private readonly logger = new Logger(TwitterService.name);
   private readonly twitterClient: TwitterApi;
   private readonly openAiClient: OpenAI;
@@ -22,6 +25,7 @@ export class TwitterService {
   private lastReset = new Date();
   private lastProcessedTweetId: string | null = null;
   private isFirstRun = true;
+  private readonly storageFile: string;
 
   constructor(private configService: ConfigService) {
     this.twitterClient = new TwitterApi({
@@ -37,6 +41,53 @@ export class TwitterService {
 
     this.logger.log('Twitter bot service initialized');
     this.checkMentionsJob(); // Immediate first check
+
+    // Create data directory path
+    const dataDir = path.join(process.cwd(), 'data');
+    this.storageFile = path.join(dataDir, 'processed_tweets.json');
+    
+    // Ensure data directory exists
+    if (!fsSync.existsSync(dataDir)) {
+      fsSync.mkdirSync(dataDir, { recursive: true });
+    }
+  }
+
+  async onModuleInit() {
+    await this.loadProcessedTweets();
+    this.checkMentionsJob(); // Immediate first check
+  }
+
+  private async loadProcessedTweets() {
+    try {
+      const data = await fs.readFile(this.storageFile, 'utf8');
+      const storedData = JSON.parse(data);
+      this.respondedTweets = new Set(storedData.respondedTweets);
+      this.lastProcessedTweetId = storedData.lastProcessedTweetId;
+      this.repliesToday = storedData.repliesToday || 0;
+      this.lastReset = new Date(storedData.lastReset || new Date());
+      this.logger.log('Loaded processed tweets from storage');
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        this.logger.log('No existing storage file found, starting fresh');
+      } else {
+        this.logger.error('Error loading processed tweets:', error);
+      }
+    }
+  }
+
+  private async saveProcessedTweets() {
+    try {
+      const dataToStore = {
+        respondedTweets: Array.from(this.respondedTweets),
+        lastProcessedTweetId: this.lastProcessedTweetId,
+        repliesToday: this.repliesToday,
+        lastReset: this.lastReset.toISOString(),
+      };
+      await fs.writeFile(this.storageFile, JSON.stringify(dataToStore, null, 2));
+      this.logger.log('Saved processed tweets to storage');
+    } catch (error) {
+      this.logger.error('Error saving processed tweets:', error);
+    }
   }
 
   private async getUserId(username: string): Promise<string | null> {
@@ -183,7 +234,7 @@ export class TwitterService {
     }
   }
 
-  private async createCoin(name: string, symbol: string): Promise<boolean> {
+  private async createCoin(name: string, symbol: string): Promise<{ success: boolean; mintAddress?: string }> {
     try {
       // Use private key from environment variable
       const privateKey = bs58.decode(this.configService.get<string>('WALLET_PRIVATE_KEY'));
@@ -246,7 +297,10 @@ export class TwitterService {
       );
 
       this.logger.log(`Coin created successfully: ${JSON.stringify(createCoinResponse.data)}`);
-      return true;
+      return { 
+        success: true, 
+        mintAddress: createCoinResponse.data.mintAddress 
+      };
     } catch (error) {
       if (axios.isAxiosError(error)) {
         this.logger.error("API Error:", {
@@ -261,7 +315,7 @@ export class TwitterService {
       } else {
         this.logger.error("Error creating coin:", error);
       }
-      return false;
+      return { success: false };
     }
   }
 
@@ -334,11 +388,12 @@ export class TwitterService {
             if (tokenDetails) {
               this.logger.log(`✅ Token details extracted - Name: ${tokenDetails.name}, Symbol: ${tokenDetails.symbol}`);
               
-              const coinCreated = await this.createCoin(tokenDetails.name, tokenDetails.symbol);
+              const coinResult = await this.createCoin(tokenDetails.name, tokenDetails.symbol);
               
               let replyText: string;
-              if (coinCreated) {
-                replyText = `Great news! Your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created successfully. 🎉`;
+              if (coinResult.success && coinResult.mintAddress) {
+                const tokenUrl = `https://beta.cybers.app/token/${coinResult.mintAddress}`;
+                replyText = `Great news! Your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created successfully. 🎉\n\nView your token here: ${tokenUrl}`;
               } else {
                 replyText = `I'm sorry, but there was an issue creating your token ${tokenDetails.name} (${tokenDetails.symbol}). Please try again later.`;
               }
@@ -348,6 +403,7 @@ export class TwitterService {
               if (await this.replyToTweet(tweet.id, replyText)) {
                 this.repliesToday++;
                 this.respondedTweets.add(tweet.id);
+                await this.saveProcessedTweets(); // Save after processing each tweet
                 this.logger.log(`✅ Successfully replied to token request tweet ${tweet.id}`);
                 this.logger.log(`Current reply count: ${this.repliesToday}/17`);
               } else {
@@ -359,6 +415,7 @@ export class TwitterService {
           } else {
             this.logger.log('⏭️ Not a token request, marking as processed and skipping...');
             this.respondedTweets.add(tweet.id);
+            await this.saveProcessedTweets(); // Save after processing each tweet
           }
         }
       }
