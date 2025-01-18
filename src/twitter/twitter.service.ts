@@ -26,6 +26,7 @@ export class TwitterService implements OnModuleInit {
   private lastProcessedTweetId: string | null = null;
   private isFirstRun = true;
   private readonly storageFile: string;
+  private readonly MAX_REPLIES_PER_DAY = 100;
 
   constructor(private configService: ConfigService) {
     this.twitterClient = new TwitterApi({
@@ -40,7 +41,6 @@ export class TwitterService implements OnModuleInit {
     });
 
     this.logger.log('Twitter bot service initialized');
-    this.checkMentionsJob(); // Immediate first check
 
     // Create data directory path
     const dataDir = path.join(process.cwd(), 'data');
@@ -54,7 +54,7 @@ export class TwitterService implements OnModuleInit {
 
   async onModuleInit() {
     await this.loadProcessedTweets();
-    this.checkMentionsJob(); // Immediate first check
+    this.checkMentionsJob(); // Keep this immediate first check
   }
 
   private async loadProcessedTweets() {
@@ -110,6 +110,14 @@ export class TwitterService implements OnModuleInit {
       if (this.lastProcessedTweetId) {
         options.since_id = this.lastProcessedTweetId;
       }
+
+      // Add required fields for media detection
+      options['tweet.fields'] = ['created_at', 'text', 'author_id', 'attachments'];
+      options['expansions'] = [
+        'author_id',
+        'attachments.media_keys'  // Required for media expansion
+      ];
+      options['media.fields'] = ['type', 'url', 'media_key'];  // Required media fields
 
       const mentions = await this.twitterClient.v2.userMentionTimeline(
         userId,
@@ -234,7 +242,17 @@ export class TwitterService implements OnModuleInit {
     }
   }
 
-  private async createCoin(name: string, symbol: string): Promise<{ success: boolean; mintAddress?: string }> {
+  private async downloadImage(url: string): Promise<Buffer> {
+    try {
+      const response = await axios.get(url, { responseType: 'arraybuffer' });
+      return Buffer.from(response.data);
+    } catch (error) {
+      this.logger.error('Error downloading image:', error);
+      throw new Error('Failed to download image');
+    }
+  }
+
+  private async createCoin(name: string, symbol: string, imageBuffer: Buffer): Promise<{ success: boolean; mintAddress?: string }> {
     try {
       // Use private key from environment variable
       const privateKey = bs58.decode(this.configService.get<string>('WALLET_PRIVATE_KEY'));
@@ -259,10 +277,9 @@ export class TwitterService implements OnModuleInit {
       // 4. Create coin with the JWT token
       const formData = new FormData();
       
-      // Add form fields
-      const dummyImageBuffer = Buffer.from('dummy image data');
-      formData.append('image', dummyImageBuffer, {
-        filename: 'dummy.jpg',
+      // Add image to form data
+      formData.append('image', imageBuffer, {
+        filename: 'token_image.jpg',
         contentType: 'image/jpeg'
       });
 
@@ -319,10 +336,18 @@ export class TwitterService implements OnModuleInit {
     }
   }
 
-  @Cron('*/15 * * * *')
+  @Cron('*/6 * * * *')
   async checkMentionsJob() {
     try {
       this.logger.log('\n=== Starting mention check job ===');
+      
+      // Check if we've hit the daily reply limit
+      this.checkAndResetDaily();
+      if (this.repliesToday >= this.MAX_REPLIES_PER_DAY) {
+        this.logger.log(`Daily reply limit reached (${this.MAX_REPLIES_PER_DAY}). Waiting for next day...`);
+        return;
+      }
+
       const username = this.configService.get('TWITTER_USER_NAME');
       this.logger.log(`Checking mentions for user: ${username}`);
 
@@ -333,14 +358,7 @@ export class TwitterService implements OnModuleInit {
       }
 
       this.logger.log(`Found user ID: ${userId}`);
-      this.logger.log(`Current replies today: ${this.repliesToday}/17`);
-
-      this.checkAndResetDaily();
-
-      if (this.repliesToday >= 17) {
-        this.logger.log('Daily reply limit reached. Waiting for next day...');
-        return;
-      }
+      this.logger.log(`Current replies today: ${this.repliesToday}/${this.MAX_REPLIES_PER_DAY}`);
 
       const mentions = await this.checkMentions(userId, {
         'tweet.fields': ['created_at', 'text', 'author_id'],
@@ -374,7 +392,7 @@ export class TwitterService implements OnModuleInit {
             continue;
           }
 
-          if (this.repliesToday >= 17) {
+          if (this.repliesToday >= this.MAX_REPLIES_PER_DAY) {
             this.logger.log('⚠️ Hit reply limit during processing. Waiting for next day...');
             break;
           }
@@ -386,41 +404,64 @@ export class TwitterService implements OnModuleInit {
           if (isTokenRequest) {
             const tokenDetails = await this.analyzeTokenDetails(tweet.text);
             if (tokenDetails) {
-              this.logger.log(`✅ Token details extracted - Name: ${tokenDetails.name}, Symbol: ${tokenDetails.symbol}`);
-              
-              const coinResult = await this.createCoin(tokenDetails.name, tokenDetails.symbol);
-              
-              let replyText: string;
-              if (coinResult.success && coinResult.mintAddress) {
-                const tokenUrl = `https://beta.cybers.app/token/${coinResult.mintAddress}`;
-                replyText = `Great news! Your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created successfully. 🎉\n\nView your token here: ${tokenUrl}`;
-              } else {
-                replyText = `I'm sorry, but there was an issue creating your token ${tokenDetails.name} (${tokenDetails.symbol}). Please try again later.`;
-              }
-              
-              this.logger.log(`💬 Attempting to reply with: "${replyText}"`);
+              // Check for image in tweet
+              const hasImage = mentions.includes?.media?.some(
+                media => media.type === 'photo' && 
+                tweet.attachments?.media_keys?.includes(media.media_key)
+              );
 
-              if (await this.replyToTweet(tweet.id, replyText)) {
-                this.repliesToday++;
-                this.respondedTweets.add(tweet.id);
-                await this.saveProcessedTweets(); // Save after processing each tweet
-                this.logger.log(`✅ Successfully replied to token request tweet ${tweet.id}`);
-                this.logger.log(`Current reply count: ${this.repliesToday}/17`);
-              } else {
-                this.logger.error(`❌ Failed to reply to tweet ${tweet.id}`);
+              if (!hasImage) {
+                const replyText = `Please include a suitable image for your token and try your request again! 🖼️`;
+                if (await this.replyToTweet(tweet.id, replyText)) {
+                  this.repliesToday++;
+                  this.respondedTweets.add(tweet.id);
+                  await this.saveProcessedTweets();
+                }
+                continue;
               }
-            } else {
-              this.logger.log('⚠️ Could not extract token details from tweet');
+
+              try {
+                // Get the image URL
+                const imageMedia = mentions.includes?.media?.find(
+                  media => media.type === 'photo' && 
+                  tweet.attachments?.media_keys?.includes(media.media_key)
+                );
+
+                if (!imageMedia?.url) {
+                  throw new Error('Image URL not found');
+                }
+
+                const imageBuffer = await this.downloadImage(imageMedia.url);
+                const coinResult = await this.createCoin(tokenDetails.name, tokenDetails.symbol, imageBuffer);
+                
+                let replyText: string;
+                if (coinResult.success && coinResult.mintAddress) {
+                  const tokenUrl = `https://beta.cybers.app/token/${coinResult.mintAddress}`;
+                  replyText = `Great news! Your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created successfully. 🎉\n\nView your token here: ${tokenUrl}`;
+                } else {
+                  replyText = `I'm sorry, but there was an issue creating your token ${tokenDetails.name} (${tokenDetails.symbol}). Please try again later.`;
+                }
+
+                if (await this.replyToTweet(tweet.id, replyText)) {
+                  this.repliesToday++;
+                  this.respondedTweets.add(tweet.id);
+                  await this.saveProcessedTweets();
+                }
+              } catch (error) {
+                const errorMessage = `Sorry, there was an issue processing your token image. Please try again with a different image.`;
+                if (await this.replyToTweet(tweet.id, errorMessage)) {
+                  this.repliesToday++;
+                  this.respondedTweets.add(tweet.id);
+                  await this.saveProcessedTweets();
+                }
+                this.logger.error('Error processing image:', error);
+              }
             }
-          } else {
-            this.logger.log('⏭️ Not a token request, marking as processed and skipping...');
-            this.respondedTweets.add(tweet.id);
-            await this.saveProcessedTweets(); // Save after processing each tweet
           }
         }
       }
 
-      this.logger.log('\n=== Job completed, waiting 15 minutes before next check... ===');
+      this.logger.log('\n=== Job completed, waiting 6 minutes before next check... ===');
     } catch (error) {
       this.logger.error('\n❌ An error occurred:', error);
     }
