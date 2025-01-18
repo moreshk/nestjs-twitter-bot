@@ -16,12 +16,12 @@ export class TwitterService {
   private readonly logger = new Logger(TwitterService.name);
   private readonly twitterClient: TwitterApi;
   private readonly openAiClient: OpenAI;
-  private readonly API_BASE_URL = "https://api.cybers.app/v1";
   private respondedTweets = new Set<string>();
   private repliesToday = 0;
   private lastReset = new Date();
   private lastProcessedTweetId: string | null = null;
   private isFirstRun = true;
+  private readonly API_BASE_URL = "https://api.cybers.app/v1";
 
   constructor(private configService: ConfigService) {
     this.twitterClient = new TwitterApi({
@@ -93,7 +93,7 @@ export class TwitterService {
     replyText: string,
   ): Promise<boolean> {
     try {
-      await this.twitterClient.v2.reply(replyText, tweetId);
+      // await this.twitterClient.v2.reply(replyText, tweetId);
       return true;
     } catch (error) {
       this.logger.error(`Failed to reply to tweet ${tweetId}:`, error);
@@ -113,7 +113,7 @@ export class TwitterService {
   private async analyzeTokenIntent(tweetText: string): Promise<boolean> {
     try {
       const response = await this.openAiClient.chat.completions.create({
-        model: 'gpt-4',
+        model: 'gpt-4o-mini',
         messages: [
           {
             role: 'system',
@@ -130,6 +130,7 @@ export class TwitterService {
       });
 
       const decision = response.choices[0].message.content.trim().toUpperCase();
+      // Log the analysis
       this.logger.log('\nTweet Analysis:');
       this.logger.log(`Tweet: ${tweetText}`);
       this.logger.log(`Decision: ${decision}`);
@@ -140,10 +141,14 @@ export class TwitterService {
     }
   }
 
+  private generateTokenResponse(): string {
+    return "Sure, I'll help create your token! The process will begin shortly. Please wait for confirmation. 🎮🔨";
+  }
+
   private async analyzeTokenDetails(tweetText: string): Promise<{ name: string; symbol: string } | null> {
     try {
       const response = await this.openAiClient.chat.completions.create({
-        model: 'gpt-4',
+        model: 'gpt-4o',
         messages: [
           {
             role: 'system',
@@ -158,6 +163,7 @@ export class TwitterService {
         temperature: 0.1,
       });
 
+      // Clean the response of any markdown formatting
       const cleanedContent = response.choices[0].message.content
         .trim()
         .replace(/```json\n?/g, '')
@@ -169,6 +175,7 @@ export class TwitterService {
         return null;
       }
 
+      // Log the analysis results
       this.logger.log('Token Details Analysis:');
       this.logger.log(`Name: ${result.name}`);
       this.logger.log(`Symbol: ${result.symbol}`);      
@@ -185,9 +192,8 @@ export class TwitterService {
 
   private async createCoin(name: string, symbol: string): Promise<boolean> {
     try {
-      // Use private key from environment variable
-      const privateKey = bs58.decode(this.configService.get<string>('WALLET_PRIVATE_KEY'));
-      const keypair = Keypair.fromSecretKey(privateKey);
+      // 1. Setup wallet (using a dummy keypair for testing)
+      const keypair = Keypair.generate();
       const walletAddress = keypair.publicKey.toString();
 
       // 2. Create and sign the authentication message
@@ -209,15 +215,13 @@ export class TwitterService {
       const formData = new FormData();
       
       // Add form fields
-      const dummyImageBuffer = Buffer.from('dummy image data');
-      formData.append('image', dummyImageBuffer, {
-        filename: 'dummy.jpg',
+      const imageResponse = await axios.get('https://ipfs.io/ipfs/QmVRU8wu7i9b7yR7dsc98jNchmchZiuRRbK66BMj9YmnfG', {
+        responseType: 'arraybuffer'
+      });
+      formData.append('image', Buffer.from(imageResponse.data), {
+        filename: 'token-image.jpg',
         contentType: 'image/jpeg'
       });
-
-      // Ensure name and symbol are within database limits
-      name = name.slice(0, 64);
-      symbol = symbol.slice(0, 10);
 
       formData.append('name', name);
       formData.append('symbol', symbol);
@@ -232,7 +236,7 @@ export class TwitterService {
       this.logger.log('Attempting to create coin with the following details:');
       this.logger.log(`Name: ${name}`);
       this.logger.log(`Symbol: ${symbol}`);
-      this.logger.log(`JWT Token: ${jwtToken.substring(0, 10)}...`);
+      this.logger.log(`JWT Token: ${jwtToken.substring(0, 10)}...`); // Log only the first 10 characters for security
 
       const createCoinResponse = await axios.post(
         `${this.API_BASE_URL}/coin/create`,
@@ -293,7 +297,6 @@ export class TwitterService {
         expansions: ['author_id'],
         'user.fields': ['username'],
       });
-
       if (mentions?.data) {
         for (const tweet of [...mentions.data].reverse()) {
           this.logger.log('\n--- Processing Tweet ---');
@@ -301,39 +304,50 @@ export class TwitterService {
           this.logger.log(`Author ID: ${tweet.author_id}`);
           this.logger.log(`Content: ${tweet.text}`);
 
+          // Skip if tweet is from ourselves
           if (tweet.author_id === userId) {
             this.logger.log('⚠️ Tweet is from ourselves, skipping...');
             continue;
           }
 
+          // Check if we've already responded to this tweet
           if (this.respondedTweets.has(tweet.id)) {
             this.logger.log('⚠️ Already responded to this tweet, skipping...');
             continue;
           }
 
+          // Check if this tweet is a reply to one we've already handled
           const isReplyToHandledTweet = mentions.data.some(
             (t) => tweet.text.includes(t.id) && this.respondedTweets.has(t.id),
           );
           if (isReplyToHandledTweet) {
-            this.logger.log('⚠️ Tweet is a reply to an already handled tweet, skipping...');
+            this.logger.log(
+              '⚠️ Tweet is a reply to an already handled tweet, skipping...',
+            );
             this.respondedTweets.add(tweet.id);
             continue;
           }
 
           if (this.repliesToday >= 17) {
-            this.logger.log('⚠️ Hit reply limit during processing. Waiting for next day...');
+            this.logger.log(
+              '⚠️ Hit reply limit during processing. Waiting for next day...',
+            );
             break;
           }
 
+          // Analyze tweet intent
           this.logger.log('🔍 Analyzing tweet intent...');
           const isTokenRequest = await this.analyzeTokenIntent(tweet.text);
-          this.logger.log(`Analysis result: ${isTokenRequest ? 'Token request detected' : 'Not a token request'}`);
+          this.logger.log(
+            `Analysis result: ${isTokenRequest ? 'Token request detected' : 'Not a token request'}`,
+          );
 
           if (isTokenRequest) {
             const tokenDetails = await this.analyzeTokenDetails(tweet.text);
             if (tokenDetails) {
               this.logger.log(`✅ Token details extracted - Name: ${tokenDetails.name}, Symbol: ${tokenDetails.symbol}`);
               
+              // Attempt to create the coin
               const coinCreated = await this.createCoin(tokenDetails.name, tokenDetails.symbol);
               
               let replyText: string;
@@ -355,15 +369,20 @@ export class TwitterService {
               }
             } else {
               this.logger.log('⚠️ Could not extract token details from tweet');
+              // Handle the case where token details couldn't be extracted
             }
           } else {
-            this.logger.log('⏭️ Not a token request, marking as processed and skipping...');
+            this.logger.log(
+              '⏭️ Not a token request, marking as processed and skipping...',
+            );
             this.respondedTweets.add(tweet.id);
           }
         }
       }
 
-      this.logger.log('\n=== Job completed, waiting 15 minutes before next check... ===');
+      this.logger.log(
+        '\n=== Job completed, waiting 15 minutes before next check... ===',
+      );
     } catch (error) {
       this.logger.error('\n❌ An error occurred:', error);
     }
