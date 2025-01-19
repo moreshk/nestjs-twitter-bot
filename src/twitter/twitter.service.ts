@@ -1,14 +1,16 @@
+/* eslint-disable prettier/prettier */
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { TwitterApi } from 'twitter-api-v2';
 import { ConfigService } from '@nestjs/config';
 import { OpenAI } from 'openai';
-import { Keypair } from "@solana/web3.js";
-import * as nacl from "tweetnacl";
-import { encodeUTF8, decodeUTF8 } from "tweetnacl-util";
-import bs58 from "bs58";
-import axios from "axios";
+import { Keypair } from '@solana/web3.js';
+import * as nacl from 'tweetnacl';
+import { encodeUTF8, decodeUTF8 } from 'tweetnacl-util';
+import bs58 from 'bs58';
+import axios from 'axios';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import FormData = require('form-data');
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -19,7 +21,7 @@ export class TwitterService implements OnModuleInit {
   private readonly logger = new Logger(TwitterService.name);
   private readonly twitterClient: TwitterApi;
   private readonly openAiClient: OpenAI;
-  private readonly API_BASE_URL = "https://api.cybers.app/v1";
+  private readonly API_BASE_URL = 'https://api.cybers.app/v1';
   private respondedTweets = new Set<string>();
   private repliesToday = 0;
   private lastReset = new Date();
@@ -45,7 +47,7 @@ export class TwitterService implements OnModuleInit {
     // Create data directory path
     const dataDir = path.join(process.cwd(), 'data');
     this.storageFile = path.join(dataDir, 'processed_tweets.json');
-    
+
     // Ensure data directory exists
     if (!fsSync.existsSync(dataDir)) {
       fsSync.mkdirSync(dataDir, { recursive: true });
@@ -83,7 +85,10 @@ export class TwitterService implements OnModuleInit {
         repliesToday: this.repliesToday,
         lastReset: this.lastReset.toISOString(),
       };
-      await fs.writeFile(this.storageFile, JSON.stringify(dataToStore, null, 2));
+      await fs.writeFile(
+        this.storageFile,
+        JSON.stringify(dataToStore, null, 2),
+      );
       this.logger.log('Saved processed tweets to storage');
     } catch (error) {
       this.logger.error('Error saving processed tweets:', error);
@@ -112,12 +117,17 @@ export class TwitterService implements OnModuleInit {
       }
 
       // Add required fields for media detection
-      options['tweet.fields'] = ['created_at', 'text', 'author_id', 'attachments'];
+      options['tweet.fields'] = [
+        'created_at',
+        'text',
+        'author_id',
+        'attachments',
+      ];
       options['expansions'] = [
         'author_id',
-        'attachments.media_keys'  // Required for media expansion
+        'attachments.media_keys', // Required for media expansion
       ];
-      options['media.fields'] = ['type', 'url', 'media_key'];  // Required media fields
+      options['media.fields'] = ['type', 'url', 'media_key']; // Required media fields
 
       const mentions = await this.twitterClient.v2.userMentionTimeline(
         userId,
@@ -199,14 +209,17 @@ export class TwitterService implements OnModuleInit {
     }
   }
 
-  private async analyzeTokenDetails(tweetText: string): Promise<{ name: string; symbol: string } | null> {
+  private async analyzeTokenDetails(
+    tweetText: string,
+  ): Promise<{ name: string; symbol: string } | null> {
     try {
       const response = await this.openAiClient.chat.completions.create({
         model: 'gpt-4',
         messages: [
           {
             role: 'system',
-            content: 'You are a token name analyzer. Extract the token name and symbol from the tweet. Respond with a JSON object containing "name" and "symbol" fields. If only one is found, use it for both. Example: {"name": "MyToken", "symbol": "MTK"}. If no valid name/symbol found, respond: {"name": null, "symbol": null}',
+            content:
+              'You are a token name analyzer. Extract the token name and symbol from the tweet. Respond with a JSON object containing "name" and "symbol" fields. If only one is found, use it for both. Example: {"name": "MyToken", "symbol": "MTK"}. If no valid name/symbol found, respond: {"name": null, "symbol": null}',
           },
           {
             role: 'user',
@@ -230,11 +243,11 @@ export class TwitterService implements OnModuleInit {
 
       this.logger.log('Token Details Analysis:');
       this.logger.log(`Name: ${result.name}`);
-      this.logger.log(`Symbol: ${result.symbol}`);      
+      this.logger.log(`Symbol: ${result.symbol}`);
 
       return {
         name: result.name,
-        symbol: result.symbol
+        symbol: result.symbol,
       };
     } catch (error) {
       this.logger.error('Error analyzing token details:', error);
@@ -252,35 +265,49 @@ export class TwitterService implements OnModuleInit {
     }
   }
 
-  private async createCoin(name: string, symbol: string, imageBuffer: Buffer): Promise<{ success: boolean; mintAddress?: string }> {
+  private async createCoin(
+    name: string,
+    symbol: string,
+    imageBuffer: Buffer,
+    tweetAuthorId: string,
+    tweetAuthorUsername: string,
+  ): Promise<{ success: boolean; mintAddress?: string }> {
     try {
       // Use private key from environment variable
-      const privateKey = bs58.decode(this.configService.get<string>('WALLET_PRIVATE_KEY'));
+      const privateKey = bs58.decode(
+        this.configService.get<string>('WALLET_PRIVATE_KEY'),
+      );
       const keypair = Keypair.fromSecretKey(privateKey);
       const walletAddress = keypair.publicKey.toString();
 
       // 2. Create and sign the authentication message
-      const message = "Sign in to Cyber";
+      const message = 'Sign in to Cyber';
       const messageBytes = decodeUTF8(message);
-      const signatureBytes = nacl.sign.detached(messageBytes, keypair.secretKey);
+      const signatureBytes = nacl.sign.detached(
+        messageBytes,
+        keypair.secretKey,
+      );
       const signature = bs58.encode(signatureBytes);
 
       // 3. Get JWT token
-      const authResponse = await axios.post(`${this.API_BASE_URL}/auth/verify-signature`, {
-        walletAddress,
-        signature,
-        message,
-      });
+      const authResponse = await axios.post(
+        `${this.API_BASE_URL}/auth/verify-signature`,
+        {
+          walletAddress,
+          signature,
+          message,
+        },
+      );
 
       const jwtToken = authResponse.data.token;
 
       // 4. Create coin with the JWT token
       const formData = new FormData();
-      
+
       // Add image to form data
       formData.append('image', imageBuffer, {
         filename: 'token_image.jpg',
-        contentType: 'image/jpeg'
+        contentType: 'image/jpeg',
       });
 
       // Ensure name and symbol are within database limits
@@ -289,13 +316,20 @@ export class TwitterService implements OnModuleInit {
 
       formData.append('name', name);
       formData.append('symbol', symbol);
-      formData.append('description', `${name} is a community-driven token.`);
+      formData.append('description', `AI Agent ${name} token.`);
       formData.append('personality', 'Friendly and helpful');
-      formData.append('instruction', 'Respond politely to all queries about the token');
+      formData.append(
+        'instruction',
+        'Respond politely to all queries about the token',
+      );
       formData.append('knowledge', 'Basic cryptocurrency knowledge');
       formData.append('twitter', symbol.toLowerCase());
       formData.append('telegram', `${symbol.toLowerCase()}_group`);
       formData.append('website', `https://${symbol.toLowerCase()}.com`);
+
+      // Add new Twitter user information
+      formData.append('creatorTwitterUserId', tweetAuthorId);
+      formData.append('creatorTwitterUsername', tweetAuthorUsername);
 
       this.logger.log('Attempting to create coin with the following details:');
       this.logger.log(`Name: ${name}`);
@@ -310,27 +344,31 @@ export class TwitterService implements OnModuleInit {
             ...formData.getHeaders(),
             Authorization: `Bearer ${jwtToken}`,
           },
-        }
+        },
       );
 
-      this.logger.log(`Coin created successfully: ${JSON.stringify(createCoinResponse.data)}`);
-      return { 
-        success: true, 
-        mintAddress: createCoinResponse.data.mintAddress 
+      this.logger.log(
+        `Coin created successfully: ${JSON.stringify(createCoinResponse.data)}`,
+      );
+      return {
+        success: true,
+        mintAddress: createCoinResponse.data.mintAddress,
       };
     } catch (error) {
       if (axios.isAxiosError(error)) {
-        this.logger.error("API Error:", {
+        this.logger.error('API Error:', {
           status: error.response?.status,
           data: error.response?.data,
           message: error.response?.data?.message || error.message,
         });
         if (error.response?.data?.data) {
-          const decodedData = Buffer.from(error.response.data.data).toString('utf-8');
+          const decodedData = Buffer.from(error.response.data.data).toString(
+            'utf-8',
+          );
           this.logger.error('Decoded error data:', decodedData);
         }
       } else {
-        this.logger.error("Error creating coin:", error);
+        this.logger.error('Error creating coin:', error);
       }
       return { success: false };
     }
@@ -340,11 +378,13 @@ export class TwitterService implements OnModuleInit {
   async checkMentionsJob() {
     try {
       this.logger.log('\n=== Starting mention check job ===');
-      
+
       // Check if we've hit the daily reply limit
       this.checkAndResetDaily();
       if (this.repliesToday >= this.MAX_REPLIES_PER_DAY) {
-        this.logger.log(`Daily reply limit reached (${this.MAX_REPLIES_PER_DAY}). Waiting for next day...`);
+        this.logger.log(
+          `Daily reply limit reached (${this.MAX_REPLIES_PER_DAY}). Waiting for next day...`,
+        );
         return;
       }
 
@@ -358,7 +398,9 @@ export class TwitterService implements OnModuleInit {
       }
 
       this.logger.log(`Found user ID: ${userId}`);
-      this.logger.log(`Current replies today: ${this.repliesToday}/${this.MAX_REPLIES_PER_DAY}`);
+      this.logger.log(
+        `Current replies today: ${this.repliesToday}/${this.MAX_REPLIES_PER_DAY}`,
+      );
 
       const mentions = await this.checkMentions(userId, {
         'tweet.fields': ['created_at', 'text', 'author_id'],
@@ -387,27 +429,34 @@ export class TwitterService implements OnModuleInit {
             (t) => tweet.text.includes(t.id) && this.respondedTweets.has(t.id),
           );
           if (isReplyToHandledTweet) {
-            this.logger.log('⚠️ Tweet is a reply to an already handled tweet, skipping...');
+            this.logger.log(
+              '⚠️ Tweet is a reply to an already handled tweet, skipping...',
+            );
             this.respondedTweets.add(tweet.id);
             continue;
           }
 
           if (this.repliesToday >= this.MAX_REPLIES_PER_DAY) {
-            this.logger.log('⚠️ Hit reply limit during processing. Waiting for next day...');
+            this.logger.log(
+              '⚠️ Hit reply limit during processing. Waiting for next day...',
+            );
             break;
           }
 
           this.logger.log('🔍 Analyzing tweet intent...');
           const isTokenRequest = await this.analyzeTokenIntent(tweet.text);
-          this.logger.log(`Analysis result: ${isTokenRequest ? 'Token request detected' : 'Not a token request'}`);
+          this.logger.log(
+            `Analysis result: ${isTokenRequest ? 'Token request detected' : 'Not a token request'}`,
+          );
 
           if (isTokenRequest) {
             const tokenDetails = await this.analyzeTokenDetails(tweet.text);
             if (tokenDetails) {
               // Check for image in tweet
               const hasImage = mentions.includes?.media?.some(
-                media => media.type === 'photo' && 
-                tweet.attachments?.media_keys?.includes(media.media_key)
+                (media) =>
+                  media.type === 'photo' &&
+                  tweet.attachments?.media_keys?.includes(media.media_key),
               );
 
               if (!hasImage) {
@@ -423,8 +472,9 @@ export class TwitterService implements OnModuleInit {
               try {
                 // Get the image URL
                 const imageMedia = mentions.includes?.media?.find(
-                  media => media.type === 'photo' && 
-                  tweet.attachments?.media_keys?.includes(media.media_key)
+                  (media) =>
+                    media.type === 'photo' &&
+                    tweet.attachments?.media_keys?.includes(media.media_key),
                 );
 
                 if (!imageMedia?.url) {
@@ -432,8 +482,16 @@ export class TwitterService implements OnModuleInit {
                 }
 
                 const imageBuffer = await this.downloadImage(imageMedia.url);
-                const coinResult = await this.createCoin(tokenDetails.name, tokenDetails.symbol, imageBuffer);
-                
+                const coinResult = await this.createCoin(
+                  tokenDetails.name,
+                  tokenDetails.symbol,
+                  imageBuffer,
+                  tweet.author_id,
+                  mentions.includes?.users?.find(
+                    (u) => u.id === tweet.author_id,
+                  )?.username || '',
+                );
+
                 let replyText: string;
                 if (coinResult.success && coinResult.mintAddress) {
                   const tokenUrl = `https://beta.cybers.app/token/${coinResult.mintAddress}`;
@@ -461,7 +519,9 @@ export class TwitterService implements OnModuleInit {
         }
       }
 
-      this.logger.log('\n=== Job completed, waiting 6 minutes before next check... ===');
+      this.logger.log(
+        '\n=== Job completed, waiting 6 minutes before next check... ===',
+      );
     } catch (error) {
       this.logger.error('\n❌ An error occurred:', error);
     }
