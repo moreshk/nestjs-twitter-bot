@@ -374,7 +374,7 @@ export class TwitterService implements OnModuleInit {
     }
   }
 
-  @Cron('*/6 * * * *')
+  @Cron('*/3 * * * *')
   async checkMentionsJob() {
     try {
       this.logger.log('\n=== Starting mention check job ===');
