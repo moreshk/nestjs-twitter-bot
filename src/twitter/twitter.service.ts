@@ -204,7 +204,7 @@ export class TwitterService implements OnModuleInit {
 
   private async analyzeTokenDetails(
     tweetText: string,
-  ): Promise<{ name: string; symbol: string } | null> {
+  ): Promise<{ name: string; symbol: string; description?: string } | null> {
     try {
       const response = await this.openAiClient.chat.completions.create({
         model: 'gpt-4o',
@@ -212,14 +212,14 @@ export class TwitterService implements OnModuleInit {
           {
             role: 'system',
             content:
-              'You are a token name analyzer. Extract the token name and symbol from the tweet. Respond with a JSON object containing "name" and "symbol" fields. If only one is found, use it for both. Example: {"name": "MyToken", "symbol": "MTK"}. If no valid name/symbol found, respond: {"name": null, "symbol": null}. Do not include the words "token" or "coin" in either the name or symbol.',
+              'You are a token analyzer. Extract the token name, symbol, and description from the tweet. Respond with a JSON object containing "name", "symbol", and "description" fields. If only name is found, use it for both name and symbol. Example: {"name": "MyToken", "symbol": "MTK", "description": "A community-driven token for gaming"}. If no description is provided, set it to null. If no valid name/symbol found, respond: {"name": null, "symbol": null, "description": null}. Do not include the words "token" or "coin" in either the name or symbol.',
           },
           {
             role: 'user',
-            content: `Extract the token name and symbol from this tweet: ${tweetText}`,
+            content: `Extract the token details from this tweet: ${tweetText}`,
           },
         ],
-        max_tokens: 100,
+        max_tokens: 300,
         temperature: 0.1,
       });
 
@@ -249,10 +249,12 @@ export class TwitterService implements OnModuleInit {
       this.logger.log('Token Details Analysis:');
       this.logger.log(`Name: ${result.name}`);
       this.logger.log(`Symbol: ${result.symbol}`);
+      this.logger.log(`Description: ${result.description || 'None provided'}`);
 
       return {
         name: result.name,
         symbol: result.symbol,
+        description: result.description || null,
       };
     } catch (error) {
       this.logger.error('Error analyzing token details:', error);
@@ -276,6 +278,7 @@ export class TwitterService implements OnModuleInit {
     imageBuffer: Buffer,
     tweetAuthorId: string,
     tweetAuthorUsername: string,
+    description?: string,
   ): Promise<{ success: boolean; mintAddress?: string }> {
     try {
       // Use private key from environment variable
@@ -321,7 +324,7 @@ export class TwitterService implements OnModuleInit {
 
       formData.append('name', name);
       formData.append('symbol', symbol);
-      formData.append('description', `AI Agent ${name} token.`);
+      formData.append('description', description || '');
       formData.append('personality', 'Friendly and helpful');
       formData.append(
         'instruction',
@@ -495,6 +498,7 @@ export class TwitterService implements OnModuleInit {
                   mentions.includes?.users?.find(
                     (u) => u.id === tweet.author_id,
                   )?.username || '',
+                  tokenDetails.description,
                 );
 
                 let replyText: string;
