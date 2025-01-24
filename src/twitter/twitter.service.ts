@@ -22,6 +22,7 @@ export class TwitterService implements OnModuleInit {
   private readonly twitterClient: TwitterApi;
   private readonly openAiClient: OpenAI;
   private readonly API_BASE_URL = 'https://api.cybers.app/v1';
+  private readonly TWITTER_USER_ID: string;
   private respondedTweets = new Set<string>();
   private repliesToday = 0;
   private lastReset = new Date();
@@ -41,6 +42,8 @@ export class TwitterService implements OnModuleInit {
     this.openAiClient = new OpenAI({
       apiKey: configService.get('OPENAI_API_KEY'),
     });
+
+    this.TWITTER_USER_ID = configService.get('TWITTER_USER_ID');
 
     this.logger.log('Twitter bot service initialized');
 
@@ -92,16 +95,6 @@ export class TwitterService implements OnModuleInit {
       this.logger.log('Saved processed tweets to storage');
     } catch (error) {
       this.logger.error('Error saving processed tweets:', error);
-    }
-  }
-
-  private async getUserId(username: string): Promise<string | null> {
-    try {
-      const user = await this.twitterClient.v2.userByUsername(username);
-      return user.data.id;
-    } catch (error) {
-      this.logger.error(`Failed to get user ID for ${username}:`, error);
-      return null;
     }
   }
 
@@ -391,13 +384,13 @@ export class TwitterService implements OnModuleInit {
       const username = this.configService.get('TWITTER_USER_NAME');
       this.logger.log(`Checking mentions for user: ${username}`);
 
-      const userId = await this.getUserId(username);
+      const userId = this.TWITTER_USER_ID;
       if (!userId) {
-        this.logger.error('Failed to get user ID');
+        this.logger.error('Twitter user ID not found in environment variables');
         return;
       }
 
-      this.logger.log(`Found user ID: ${userId}`);
+      // this.logger.log(`Found user ID: ${userId}`);
       this.logger.log(
         `Current replies today: ${this.repliesToday}/${this.MAX_REPLIES_PER_DAY}`,
       );
@@ -496,34 +489,21 @@ export class TwitterService implements OnModuleInit {
                 if (coinResult.success && coinResult.mintAddress) {
                   const tokenUrl = `https://beta.cybers.app/token/${coinResult.mintAddress}`;
                   replyText = `Great news! Your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created successfully. 🎉\n\nView your token here: ${tokenUrl}`;
-                } else {
-                  replyText = `I'm sorry, but there was an issue creating your token ${tokenDetails.name} (${tokenDetails.symbol}). Please try again later.`;
-                }
-
-                if (await this.replyToTweet(tweet.id, replyText)) {
-                  this.repliesToday++;
-                  this.respondedTweets.add(tweet.id);
-                  await this.saveProcessedTweets();
+                  if (await this.replyToTweet(tweet.id, replyText)) {
+                    this.repliesToday++;
+                    this.respondedTweets.add(tweet.id);
+                    await this.saveProcessedTweets();
+                  }
                 }
               } catch (error) {
-                const errorMessage = `Sorry, there was an issue processing your token image. Please try again with a different image.`;
-                if (await this.replyToTweet(tweet.id, errorMessage)) {
-                  this.repliesToday++;
-                  this.respondedTweets.add(tweet.id);
-                  await this.saveProcessedTweets();
-                }
-                this.logger.error('Error processing image:', error);
+                this.logger.error('Error creating coin:', error);
               }
             }
           }
         }
       }
-
-      this.logger.log(
-        '\n=== Job completed, waiting 6 minutes before next check... ===',
-      );
     } catch (error) {
-      this.logger.error('\n❌ An error occurred:', error);
+      this.logger.error('Error checking mentions:', error);
     }
   }
 }
