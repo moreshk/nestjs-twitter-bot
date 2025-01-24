@@ -175,7 +175,7 @@ export class TwitterService implements OnModuleInit {
   private async analyzeTokenIntent(tweetText: string): Promise<boolean> {
     try {
       const response = await this.openAiClient.chat.completions.create({
-        model: 'gpt-4',
+        model: 'gpt-4o-mini',
         messages: [
           {
             role: 'system',
@@ -207,12 +207,12 @@ export class TwitterService implements OnModuleInit {
   ): Promise<{ name: string; symbol: string } | null> {
     try {
       const response = await this.openAiClient.chat.completions.create({
-        model: 'gpt-4',
+        model: 'gpt-4o',
         messages: [
           {
             role: 'system',
             content:
-              'You are a token name analyzer. Extract the token name and symbol from the tweet. Respond with a JSON object containing "name" and "symbol" fields. If only one is found, use it for both. Example: {"name": "MyToken", "symbol": "MTK"}. If no valid name/symbol found, respond: {"name": null, "symbol": null}',
+              'You are a token name analyzer. Extract the token name and symbol from the tweet. Respond with a JSON object containing "name" and "symbol" fields. If only one is found, use it for both. Example: {"name": "MyToken", "symbol": "MTK"}. If no valid name/symbol found, respond: {"name": null, "symbol": null}. Do not include the words "token" or "coin" in either the name or symbol.',
           },
           {
             role: 'user',
@@ -230,6 +230,18 @@ export class TwitterService implements OnModuleInit {
         .trim();
 
       const result = JSON.parse(cleanedContent);
+      if (!result.name || !result.symbol) {
+        return null;
+      }
+
+      // Additional validation to remove 'token' and 'coin' from name and symbol
+      const sanitizeName = (str: string) => 
+        str.replace(/token|coin/gi, '').trim();
+
+      result.name = sanitizeName(result.name);
+      result.symbol = sanitizeName(result.symbol);
+
+      // Return null if name or symbol is empty after sanitization
       if (!result.name || !result.symbol) {
         return null;
       }
