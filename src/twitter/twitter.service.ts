@@ -331,9 +331,9 @@ export class TwitterService implements OnModuleInit {
         'Respond politely to all queries about the token',
       );
       formData.append('knowledge', 'Basic cryptocurrency knowledge');
-      formData.append('twitter', symbol.toLowerCase());
-      formData.append('telegram', `${symbol.toLowerCase()}_group`);
-      formData.append('website', `https://${symbol.toLowerCase()}.com`);
+      formData.append('twitter', '');
+      formData.append('telegram', '');
+      formData.append('website', '');
 
       // Add new Twitter user information
       formData.append('creatorTwitterUserId', tweetAuthorId);
