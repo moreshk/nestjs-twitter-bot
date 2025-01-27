@@ -334,15 +334,15 @@ export class TwitterService implements OnModuleInit {
       formData.append('twitter', '');
       formData.append('telegram', '');
       formData.append('website', '');
-
-      // Add new Twitter user information
       formData.append('creatorTwitterUserId', tweetAuthorId);
       formData.append('creatorTwitterUsername', tweetAuthorUsername);
+      formData.append('vanityAddress', 'AGI');
 
       this.logger.log('Attempting to create coin with the following details:');
       this.logger.log(`Name: ${name}`);
       this.logger.log(`Symbol: ${symbol}`);
       this.logger.log(`JWT Token: ${jwtToken.substring(0, 10)}...`);
+      this.logger.log(`Vanity Address: AGI`);
 
       const createCoinResponse = await axios.post(
         `${this.API_BASE_URL}/coin/create`,
