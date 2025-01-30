@@ -21,7 +21,7 @@ export class TwitterService implements OnModuleInit {
   private readonly logger = new Logger(TwitterService.name);
   private readonly twitterClient: TwitterApi;
   private readonly openAiClient: OpenAI;
-  private readonly API_BASE_URL = 'https://api.cybers.app/v1';
+  private readonly API_BASE_URL = 'https://api.heyhal.xyz/v1';
   private readonly TWITTER_USER_ID: string;
   private respondedTweets = new Set<string>();
   private repliesToday = 0;
@@ -504,7 +504,7 @@ export class TwitterService implements OnModuleInit {
                 let replyText: string;
                 if (coinResult.success && coinResult.mintAddress) {
                   const tokenUrl = `https://heyhal.xyz/token/${coinResult.mintAddress}`;
-                  replyText = `Great news! Your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created successfully. 🎉\n\nClaim your token here: ${tokenUrl}`;
+                  replyText = `Hey Pal, your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created!\nClaim it here: ${tokenUrl}\n:heart: Hal`;
                   if (await this.replyToTweet(tweet.id, replyText)) {
                     this.repliesToday++;
                     this.respondedTweets.add(tweet.id);
