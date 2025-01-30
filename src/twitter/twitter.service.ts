@@ -504,7 +504,7 @@ export class TwitterService implements OnModuleInit {
                 let replyText: string;
                 if (coinResult.success && coinResult.mintAddress) {
                   const tokenUrl = `https://heyhal.xyz/token/${coinResult.mintAddress}`;
-                  replyText = `Hey Pal, your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created!\nClaim it here: ${tokenUrl}\n:heart: Hal`;
+                  replyText = `Hey Pal, your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created!\nClaim it here: ${tokenUrl}\n❤️ Hal`;
                   if (await this.replyToTweet(tweet.id, replyText)) {
                     this.repliesToday++;
                     this.respondedTweets.add(tweet.id);
