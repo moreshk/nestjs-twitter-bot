@@ -382,6 +382,38 @@ export class TwitterService implements OnModuleInit {
     }
   }
 
+  private async generateTokenCreationResponse(
+    name: string, 
+    symbol: string, 
+    tokenUrl: string
+  ): Promise<string> {
+    try {
+      const response = await this.openAiClient.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are Hal, a witty and friendly AI. Create a short, engaging tweet announcing a new token creation. Keep it casual and fun. Must include the token name, symbol, and URL. Maximum 240 characters.',
+          },
+          {
+            role: 'user',
+            content: `Create an announcement for token ${name} (${symbol}) with URL ${tokenUrl}`,
+          },
+        ],
+        max_tokens: 100,
+        temperature: 0.7,
+      });
+
+      const generatedText = response.choices[0].message.content.trim();
+      return generatedText.length > 240 
+        ? `🎉 Your token ${name} (${symbol}) is ready!\nClaim it here: ${tokenUrl}`
+        : generatedText;
+    } catch (error) {
+      this.logger.error('Error generating token creation response:', error);
+      return `🎉 Your token ${name} (${symbol}) is ready!\nClaim it here: ${tokenUrl}`;
+    }
+  }
+
   @Cron('*/2 * * * *')
   async checkMentionsJob() {
     try {
@@ -504,7 +536,11 @@ export class TwitterService implements OnModuleInit {
                 let replyText: string;
                 if (coinResult.success && coinResult.mintAddress) {
                   const tokenUrl = `https://heyhal.xyz/token/${coinResult.mintAddress}`;
-                  replyText = `Hey Pal, your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created!\nClaim it here: ${tokenUrl}\n❤️ Hal`;
+                  replyText = await this.generateTokenCreationResponse(
+                    tokenDetails.name,
+                    tokenDetails.symbol,
+                    tokenUrl
+                  );
                   if (await this.replyToTweet(tweet.id, replyText)) {
                     this.repliesToday++;
                     this.respondedTweets.add(tweet.id);
