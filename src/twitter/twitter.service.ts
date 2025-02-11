@@ -382,6 +382,21 @@ export class TwitterService implements OnModuleInit {
     }
   }
 
+  private async shortenUrl(longUrl: string): Promise<string> {
+    try {
+      const response = await axios.get('https://is.gd/create.php', {
+        params: {
+          format: 'json',
+          url: longUrl
+        }
+      });
+      return response.data.shorturl;
+    } catch (error) {
+      this.logger.error('Error shortening URL:', error);
+      return longUrl; // Fallback to original URL if shortening fails
+    }
+  }
+
   @Cron('*/2 * * * *')
   async checkMentionsJob() {
     try {
@@ -504,7 +519,8 @@ export class TwitterService implements OnModuleInit {
                 let replyText: string;
                 if (coinResult.success && coinResult.mintAddress) {
                   const tokenUrl = `https://heyhal.xyz/token/${coinResult.mintAddress}`;
-                  replyText = `Hey Pal, your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created!\nClaim it here: ${tokenUrl}\n  Hal`;
+                  const shortUrl = await this.shortenUrl(tokenUrl);
+                  replyText = `Hey Pal, your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created!\nClaim it here: ${shortUrl}`;
                   if (await this.replyToTweet(tweet.id, replyText)) {
                     this.repliesToday++;
                     this.respondedTweets.add(tweet.id);
