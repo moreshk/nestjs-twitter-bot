@@ -11,7 +11,10 @@ COPY package*.json ./
 # Install ALL dependencies (including devDependencies)
 RUN npm install
 
+# Copy source code
 COPY . .
+
+# Build the application
 RUN npm run build
 
 # Remove devDependencies for production
