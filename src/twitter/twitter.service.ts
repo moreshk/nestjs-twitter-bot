@@ -27,7 +27,6 @@ export class TwitterService implements OnModuleInit {
   private readonly TWITTER_USER_ID: string;
   private repliesToday = 0;
   private lastReset = new Date();
-  private lastProcessedTweetId: string | null = null;
   private isFirstRun = true;
   private readonly MAX_REPLIES_PER_DAY = 100;
   private pool: Pool;
@@ -105,16 +104,25 @@ export class TwitterService implements OnModuleInit {
     }
   }
 
+  private async getLastProcessedTweetId(): Promise<string | null> {
+    try {
+      const result = await this.pool.query(`
+        SELECT tweet_id 
+        FROM processed_tweets 
+        ORDER BY processed_at DESC 
+        LIMIT 1
+      `);
+      return result.rows[0]?.tweet_id || null;
+    } catch (error) {
+      this.logger.error('Error getting last processed tweet:', error);
+      return null;
+    }
+  }
+
   private async checkMentions(userId: string, options: any): Promise<any> {
     try {
-      if (this.isFirstRun) {
-        options.max_results = 5;
-        this.isFirstRun = false;
-      }
-
-      if (this.lastProcessedTweetId) {
-        options.since_id = this.lastProcessedTweetId;
-      }
+      // Increase max results to catch more mentions
+      options.max_results = 20;
 
       // Add required fields for media detection
       options['tweet.fields'] = [
@@ -125,31 +133,33 @@ export class TwitterService implements OnModuleInit {
       ];
       options['expansions'] = [
         'author_id',
-        'attachments.media_keys', // Required for media expansion
+        'attachments.media_keys',
       ];
-      options['media.fields'] = ['type', 'url', 'media_key']; // Required media fields
+      options['media.fields'] = ['type', 'url', 'media_key'];
 
+      // Get mentions with pagination
       const mentions = await this.twitterClient.v2.userMentionTimeline(
         userId,
-        options,
+        {
+          ...options,
+          start_time: new Date(Date.now() - 7 * 60 * 1000).toISOString(), // Last 7 minutes
+        },
       );
 
-      if (mentions.data.data && mentions.data.data.length > 0) {
-        this.lastProcessedTweetId = mentions.data.data[0].id;
+      if (mentions.data && Array.isArray(mentions.data.data)) {
         this.logger.log(
-          `Found ${mentions.data.data.length} new mentions since last check`,
-        );
-        this.logger.log(
-          `Updated last processed tweet ID to: ${this.lastProcessedTweetId}`,
+          `Found ${mentions.data.data.length} mentions in latest check`,
         );
       } else {
-        this.logger.log('No new mentions found');
+        this.logger.log('No mentions found');
       }
 
       return mentions.data;
     } catch (error) {
       if (error.code === 429) {
-        this.logger.warn('Rate limit reached. Will retry in next cycle.');
+        // Wait for 2 minutes before next attempt
+        await new Promise(resolve => setTimeout(resolve, 120000));
+        this.logger.warn('Rate limit reached, waited 2 minutes');
         return null;
       }
       this.logger.error('API Error:', error);
@@ -438,8 +448,8 @@ export class TwitterService implements OnModuleInit {
         'user.fields': ['username'],
       });
 
-      if (mentions?.data) {
-        for (const tweet of [...mentions.data].reverse()) {
+      if (mentions && mentions.data && Array.isArray(mentions.data)) {
+        for (const tweet of mentions.data) {
           this.logger.log('\n--- Processing Tweet ---');
           this.logger.log(`Tweet ID: ${tweet.id}`);
           this.logger.log(`Author ID: ${tweet.author_id}`);
@@ -522,6 +532,8 @@ export class TwitterService implements OnModuleInit {
             await this.markTweetAsProcessed(tweet.id);
           }
         }
+      } else {
+        this.logger.log('No valid mentions data found');
       }
     } catch (error) {
       this.logger.error('Error checking mentions:', error);
