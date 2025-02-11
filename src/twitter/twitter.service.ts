@@ -16,6 +16,7 @@ import FormData = require('form-data');
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as fsSync from 'fs';
+import { Pool } from 'pg';
 
 @Injectable()
 export class TwitterService implements OnModuleInit {
@@ -24,13 +25,12 @@ export class TwitterService implements OnModuleInit {
   private readonly openAiClient: OpenAI;
   private readonly API_BASE_URL = 'https://api.heyhal.xyz/v1';
   private readonly TWITTER_USER_ID: string;
-  private respondedTweets = new Set<string>();
   private repliesToday = 0;
   private lastReset = new Date();
   private lastProcessedTweetId: string | null = null;
   private isFirstRun = true;
-  private readonly storageFile: string;
   private readonly MAX_REPLIES_PER_DAY = 100;
+  private pool: Pool;
 
   constructor(private configService: ConfigService) {
     this.twitterClient = new TwitterApi({
@@ -48,56 +48,60 @@ export class TwitterService implements OnModuleInit {
 
     this.logger.log('Twitter bot service initialized');
 
-    // Create data directory path
-    const dataDir = path.join(process.cwd(), 'data');
-    this.storageFile = path.join(dataDir, 'processed_tweets.json');
-
-    // Ensure data directory exists
-    if (!fsSync.existsSync(dataDir)) {
-      fsSync.mkdirSync(dataDir, { recursive: true });
-    }
+    // Initialize database connection with SSL disabled for local development
+    this.pool = new Pool({
+      host: configService.get('DB_HOST'),
+      database: configService.get('DB_NAME'),
+      user: configService.get('DB_USERNAME'),
+      password: configService.get('DB_PASSWORD'),
+      port: parseInt(configService.get('DB_PORT')),
+      ssl: {
+        rejectUnauthorized: false // This allows connecting without SSL verification
+      }
+    });
   }
 
   async onModuleInit() {
-    await this.loadProcessedTweets();
+    await this.ensureTableExists();
     this.checkMentionsJob(); // Keep this immediate first check
   }
 
-  private async loadProcessedTweets() {
+  private async ensureTableExists() {
     try {
-      const data = await fs.readFile(this.storageFile, 'utf8');
-      const storedData = JSON.parse(data);
-      this.respondedTweets = new Set(storedData.respondedTweets);
-      this.lastProcessedTweetId = storedData.lastProcessedTweetId;
-      this.repliesToday = storedData.repliesToday || 0;
-      this.lastReset = new Date(storedData.lastReset || new Date());
-      this.logger.log('Loaded processed tweets from storage');
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS processed_tweets (
+          tweet_id VARCHAR(255) PRIMARY KEY,
+          processed_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      this.logger.log('Processed tweets table verified/created');
     } catch (error) {
-      if (error.code === 'ENOENT') {
-        this.logger.log('No existing storage file found, starting fresh');
-        // Initialize with empty data
-        await this.saveProcessedTweets();
-      } else {
-        this.logger.error('Error loading processed tweets:', error);
-      }
+      this.logger.error('Error ensuring table exists:', error);
     }
   }
 
-  private async saveProcessedTweets() {
+  private async isTweetProcessed(tweetId: string): Promise<boolean> {
     try {
-      const dataToStore = {
-        respondedTweets: Array.from(this.respondedTweets),
-        lastProcessedTweetId: this.lastProcessedTweetId,
-        repliesToday: this.repliesToday,
-        lastReset: this.lastReset.toISOString(),
-      };
-      await fs.writeFile(
-        this.storageFile,
-        JSON.stringify(dataToStore, null, 2),
+      const result = await this.pool.query(
+        'SELECT EXISTS(SELECT 1 FROM processed_tweets WHERE tweet_id = $1)',
+        [tweetId]
       );
-      this.logger.log('Saved processed tweets to storage');
+      return result.rows[0].exists;
     } catch (error) {
-      this.logger.error('Error saving processed tweets:', error);
+      this.logger.error('Error checking processed tweet:', error);
+      return false;
+    }
+  }
+
+  private async markTweetAsProcessed(tweetId: string): Promise<void> {
+    try {
+      await this.pool.query(
+        'INSERT INTO processed_tweets (tweet_id) VALUES ($1) ON CONFLICT DO NOTHING',
+        [tweetId]
+      );
+      this.logger.log(`Marked tweet ${tweetId} as processed`);
+    } catch (error) {
+      this.logger.error('Error marking tweet as processed:', error);
     }
   }
 
@@ -409,7 +413,7 @@ export class TwitterService implements OnModuleInit {
       this.checkAndResetDaily();
       if (this.repliesToday >= this.MAX_REPLIES_PER_DAY) {
         this.logger.log(
-          `Daily reply limit reached (${this.MAX_REPLIES_PER_DAY}). Waiting for next day...`,
+          `Daily reply limit reached (${this.MAX_REPLIES_PER_DAY}). Waiting for next day...`
         );
         return;
       }
@@ -435,47 +439,27 @@ export class TwitterService implements OnModuleInit {
       });
 
       if (mentions?.data) {
-        const newRespondedTweets = new Set<string>();
         for (const tweet of [...mentions.data].reverse()) {
           this.logger.log('\n--- Processing Tweet ---');
           this.logger.log(`Tweet ID: ${tweet.id}`);
           this.logger.log(`Author ID: ${tweet.author_id}`);
           this.logger.log(`Content: ${tweet.text}`);
 
+          // Check if tweet was already processed
+          const isProcessed = await this.isTweetProcessed(tweet.id);
+          if (isProcessed) {
+            this.logger.log('⚠️ Tweet already processed in database, skipping...');
+            continue;
+          }
+
           if (tweet.author_id === userId) {
-            this.logger.log('⚠️ Tweet is from ourselves, skipping...');
+            this.logger.log('⚠️ Tweet is from ourselves, marking as processed...');
+            await this.markTweetAsProcessed(tweet.id);
             continue;
           }
 
-          if (this.respondedTweets.has(tweet.id)) {
-            this.logger.log('⚠️ Already responded to this tweet, skipping...');
-            continue;
-          }
-
-          const isReplyToHandledTweet = mentions.data.some(
-            (t) => tweet.text.includes(t.id) && this.respondedTweets.has(t.id),
-          );
-          if (isReplyToHandledTweet) {
-            this.logger.log(
-              '⚠️ Tweet is a reply to an already handled tweet, skipping...',
-            );
-            this.respondedTweets.add(tweet.id);
-            continue;
-          }
-
-          if (this.repliesToday >= this.MAX_REPLIES_PER_DAY) {
-            this.logger.log(
-              '⚠️ Hit reply limit during processing. Waiting for next day...',
-            );
-            break;
-          }
-
-          this.logger.log('🔍 Analyzing tweet intent...');
+          // Process the tweet and handle response
           const isTokenRequest = await this.analyzeTokenIntent(tweet.text);
-          this.logger.log(
-            `Analysis result: ${isTokenRequest ? 'Token request detected' : 'Not a token request'}`,
-          );
-
           if (isTokenRequest) {
             const tokenDetails = await this.analyzeTokenDetails(tweet.text);
             if (tokenDetails) {
@@ -489,8 +473,8 @@ export class TwitterService implements OnModuleInit {
               if (!hasImage) {
                 const replyText = `Please include a suitable image for your token and try your request again! 🖼️`;
                 if (await this.replyToTweet(tweet.id, replyText)) {
+                  await this.markTweetAsProcessed(tweet.id);
                   this.repliesToday++;
-                  newRespondedTweets.add(tweet.id);
                 }
                 continue;
               }
@@ -525,21 +509,18 @@ export class TwitterService implements OnModuleInit {
                   const shortUrl = await this.shortenUrl(tokenUrl);
                   replyText = `Hey Pal, your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created!\nClaim it here: ${shortUrl}`;
                   if (await this.replyToTweet(tweet.id, replyText)) {
+                    await this.markTweetAsProcessed(tweet.id);
                     this.repliesToday++;
-                    newRespondedTweets.add(tweet.id);
                   }
                 }
               } catch (error) {
                 this.logger.error('Error creating coin:', error);
               }
             }
+          } else {
+            this.logger.log('📝 Not a token request, marking as processed');
+            await this.markTweetAsProcessed(tweet.id);
           }
-        }
-        
-        // Update respondedTweets and save to storage only if new tweets were processed
-        if (newRespondedTweets.size > 0) {
-          this.respondedTweets = new Set([...this.respondedTweets, ...newRespondedTweets]);
-          await this.saveProcessedTweets();
         }
       }
     } catch (error) {
