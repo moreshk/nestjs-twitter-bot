@@ -34,7 +34,9 @@
     "rxjs": "^7.8.1",
     "tweetnacl": "^1.0.3",
     "tweetnacl-util": "^0.15.1",
-    "twitter-api-v2": "^1.19.0"
+    "twitter-api-v2": "^1.19.0",
+    "pg": "^8.11.3",
+    "@types/pg": "^8.10.9"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.0.0",
