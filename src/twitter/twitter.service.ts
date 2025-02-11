@@ -74,6 +74,8 @@ export class TwitterService implements OnModuleInit {
     } catch (error) {
       if (error.code === 'ENOENT') {
         this.logger.log('No existing storage file found, starting fresh');
+        // Initialize with empty data
+        await this.saveProcessedTweets();
       } else {
         this.logger.error('Error loading processed tweets:', error);
       }
@@ -432,6 +434,7 @@ export class TwitterService implements OnModuleInit {
       });
 
       if (mentions?.data) {
+        const newRespondedTweets = new Set<string>();
         for (const tweet of [...mentions.data].reverse()) {
           this.logger.log('\n--- Processing Tweet ---');
           this.logger.log(`Tweet ID: ${tweet.id}`);
@@ -486,8 +489,7 @@ export class TwitterService implements OnModuleInit {
                 const replyText = `Please include a suitable image for your token and try your request again! 🖼️`;
                 if (await this.replyToTweet(tweet.id, replyText)) {
                   this.repliesToday++;
-                  this.respondedTweets.add(tweet.id);
-                  await this.saveProcessedTweets();
+                  newRespondedTweets.add(tweet.id);
                 }
                 continue;
               }
@@ -523,8 +525,7 @@ export class TwitterService implements OnModuleInit {
                   replyText = `Hey Pal, your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created!\nClaim it here: ${shortUrl}`;
                   if (await this.replyToTweet(tweet.id, replyText)) {
                     this.repliesToday++;
-                    this.respondedTweets.add(tweet.id);
-                    await this.saveProcessedTweets();
+                    newRespondedTweets.add(tweet.id);
                   }
                 }
               } catch (error) {
@@ -532,6 +533,12 @@ export class TwitterService implements OnModuleInit {
               }
             }
           }
+        }
+        
+        // Update respondedTweets and save to storage only if new tweets were processed
+        if (newRespondedTweets.size > 0) {
+          this.respondedTweets = new Set([...this.respondedTweets, ...newRespondedTweets]);
+          await this.saveProcessedTweets();
         }
       }
     } catch (error) {
