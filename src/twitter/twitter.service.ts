@@ -16,6 +16,7 @@ import FormData = require('form-data');
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as fsSync from 'fs';
+import * as sharp from 'sharp';
 import { Pool } from 'pg';
 
 @Injectable()
@@ -170,9 +171,14 @@ export class TwitterService implements OnModuleInit {
   private async replyToTweet(
     tweetId: string,
     replyText: string,
+    mediaId?: string
   ): Promise<boolean> {
     try {
-      await this.twitterClient.v2.reply(replyText, tweetId);
+      await this.twitterClient.v2.reply(
+        replyText,
+        tweetId,
+        mediaId ? { media: { media_ids: [mediaId] } } : undefined
+      );
       return true;
     } catch (error) {
       this.logger.error(`Failed to reply to tweet ${tweetId}:`, error);
@@ -286,6 +292,41 @@ export class TwitterService implements OnModuleInit {
     } catch (error) {
       this.logger.error('Error downloading image:', error);
       throw new Error('Failed to download image');
+    }
+  }
+
+  private async overlayTextOnImage(imageBuffer: Buffer, mintAddress: string): Promise<Buffer> {
+    try {
+      // Create a text overlay SVG
+      const svgText = `
+        <svg width="1000" height="1000">
+          <style>
+            .text {
+              fill: white;
+              font-size: 40px;
+              font-weight: bold;
+              font-family: Arial, sans-serif;
+              text-shadow: 2px 2px 5px rgba(0,0,0,0.5);
+            }
+          </style>
+          <text x="50%" y="90%" text-anchor="middle" class="text">${mintAddress}</text>
+        </svg>`;
+
+      // Overlay the text on the image
+      return await sharp(imageBuffer)
+        .resize(1000, 1000, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+        .composite([
+          {
+            input: Buffer.from(svgText),
+            top: 0,
+            left: 0,
+          },
+        ])
+        .jpeg()
+        .toBuffer();
+    } catch (error) {
+      this.logger.error('Error overlaying text on image:', error);
+      return imageBuffer; // Return original image if overlay fails
     }
   }
 
@@ -474,13 +515,13 @@ export class TwitterService implements OnModuleInit {
             const tokenDetails = await this.analyzeTokenDetails(tweet.text);
             if (tokenDetails) {
               // Check for image in tweet
-              const hasImage = mentions.includes?.media?.some(
+              const imageMedia = mentions.includes?.media?.find(
                 (media) =>
                   media.type === 'photo' &&
-                  tweet.attachments?.media_keys?.includes(media.media_key),
+                  tweet.attachments?.media_keys?.includes(media.media_key)
               );
 
-              if (!hasImage) {
+              if (!imageMedia) {
                 const replyText = `Please include a suitable image for your token and try your request again! 🖼️`;
                 if (await this.replyToTweet(tweet.id, replyText)) {
                   await this.markTweetAsProcessed(tweet.id);
@@ -490,18 +531,15 @@ export class TwitterService implements OnModuleInit {
               }
 
               try {
-                // Get the image URL
-                const imageMedia = mentions.includes?.media?.find(
-                  (media) =>
-                    media.type === 'photo' &&
-                    tweet.attachments?.media_keys?.includes(media.media_key),
-                );
-
-                if (!imageMedia?.url) {
+                if (!imageMedia.url) {
                   throw new Error('Image URL not found');
                 }
 
                 const imageBuffer = await this.downloadImage(imageMedia.url);
+                
+                // Upload the image to Twitter
+                const mediaId = await this.twitterClient.v1.uploadMedia(imageBuffer, { mimeType: 'image/jpeg' });
+
                 const coinResult = await this.createCoin(
                   tokenDetails.name,
                   tokenDetails.symbol,
@@ -515,10 +553,14 @@ export class TwitterService implements OnModuleInit {
 
                 let replyText: string;
                 if (coinResult.success && coinResult.mintAddress) {
-                  const tokenUrl = `https://heyhal.xyz/token/${coinResult.mintAddress}`;
-                  const shortUrl = await this.shortenUrl(tokenUrl);
-                  replyText = `Hey Pal, your token ${tokenDetails.name} (${tokenDetails.symbol}) has been created!\nClaim it here: ${shortUrl}`;
-                  if (await this.replyToTweet(tweet.id, replyText)) {
+                  // Create the overlay image with the mint address
+                  const overlaidImageBuffer = await this.overlayTextOnImage(imageBuffer, coinResult.mintAddress);
+                  
+                  // Upload the modified image to Twitter
+                  const mediaId = await this.twitterClient.v1.uploadMedia(overlaidImageBuffer, { mimeType: 'image/jpeg' });
+
+                  replyText = `Hey Pal, ${tokenDetails.name} token (${tokenDetails.symbol}) created!\n${coinResult.mintAddress}\nClaim it at heyhal.xyz`;
+                  if (await this.replyToTweet(tweet.id, replyText, mediaId)) {
                     await this.markTweetAsProcessed(tweet.id);
                     this.repliesToday++;
                   }
