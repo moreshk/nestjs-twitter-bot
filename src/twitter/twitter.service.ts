@@ -553,14 +553,10 @@ export class TwitterService implements OnModuleInit {
 
                 let replyText: string;
                 if (coinResult.success && coinResult.mintAddress) {
-                  // Create the overlay image with the mint address
-                  const overlaidImageBuffer = await this.overlayTextOnImage(imageBuffer, coinResult.mintAddress);
+                  const tokenUrl = `https://heyhal.xyz/token/${coinResult.mintAddress}`;
                   
-                  // Upload the modified image to Twitter
-                  const mediaId = await this.twitterClient.v1.uploadMedia(overlaidImageBuffer, { mimeType: 'image/jpeg' });
-
-                  replyText = `Hey Pal, ${tokenDetails.name} token (${tokenDetails.symbol}) created!\n${coinResult.mintAddress}\nClaim it at heyhal.xyz`;
-                  if (await this.replyToTweet(tweet.id, replyText, mediaId)) {
+                  replyText = `Hey Pal, ${tokenDetails.name} (${tokenDetails.symbol}) has been created!\n\n✨ CA: ${coinResult.mintAddress}\n\n🔗 View and claim your token here:\n${tokenUrl}`;
+                  if (await this.replyToTweet(tweet.id, replyText)) {
                     await this.markTweetAsProcessed(tweet.id);
                     this.repliesToday++;
                   }
